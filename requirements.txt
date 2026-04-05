@@ -1,0 +1,6 @@
+groq
+openai
+requests
+python-dotenv
+lizard
+scipy>=1.10

@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+pipeline_output/
+annotated_tech_debt_pilot.html
+annotated_tech_debt_pilot.json
+annotated_tech_debt_pilot.md
+combined_whole_dataset_per_comment.json
+=1.10
