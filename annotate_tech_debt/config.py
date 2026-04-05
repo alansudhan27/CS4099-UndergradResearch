@@ -18,15 +18,18 @@ PREPARED_CSV_PATH = PIPELINE_DIR / "prepared_dataset.csv"
 PREPARATION_SUMMARY_PATH = PIPELINE_DIR / "preparation_summary.md"
 ANNOTATION_REPORT_PATH = PIPELINE_DIR / "annotation_report.md"
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MAX_COMPLETION_TOKENS = int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "1200"))
 GITHUB_API_BASE = "https://api.github.com"
 
 # Ollama (local model) config
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:70b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct")
+OLLAMA_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_REQUEST_TIMEOUT_SECONDS", "120"))
+OLLAMA_MAX_COMPLETION_TOKENS = int(os.getenv("OLLAMA_MAX_COMPLETION_TOKENS", "1200"))
 
 # Backend selection: "groq" or "ollama"
-DEFAULT_BACKEND = "groq"
+DEFAULT_BACKEND = "ollama"
 
 # Sampling
 TARGET_SAMPLE_SIZE = 500

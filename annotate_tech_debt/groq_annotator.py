@@ -6,6 +6,10 @@ from openai import OpenAI
 from . import config
 from .models import TechDebtAnnotation, GitHubContext
 
+
+class QuotaExhaustedError(RuntimeError):
+    """Raised when backend quota is exhausted and retries should stop."""
+
 SYSTEM_PROMPT = """You are a software engineering researcher assessing code changes that reference generative AI tools (ChatGPT, GPT-4, Claude, Copilot, etc.).
 
 You will be given:
@@ -205,6 +209,7 @@ def _get_ollama_client() -> OpenAI:
         _ollama_client = OpenAI(
             base_url=config.OLLAMA_BASE_URL,
             api_key="ollama",  # Ollama doesn't require a real key
+            timeout=config.OLLAMA_REQUEST_TIMEOUT_SECONDS,
         )
     return _ollama_client
 
@@ -225,14 +230,18 @@ def annotate_record(
     if backend == "ollama":
         client = _get_ollama_client()
         model = config.OLLAMA_MODEL
+        max_tokens = config.OLLAMA_MAX_COMPLETION_TOKENS
     else:
         client = _get_groq_client()
         model = config.GROQ_MODEL
+        max_tokens = config.GROQ_MAX_COMPLETION_TOKENS
 
     user_prompt = _build_user_prompt(record, context)
 
     print(f"  Sending to {backend} ({model})...")
     print(f"  Prompt length: ~{len(user_prompt)} chars")
+    if backend == "ollama":
+        print(f"  Ollama timeout: {config.OLLAMA_REQUEST_TIMEOUT_SECONDS:.0f}s | max tokens: {max_tokens}")
 
     # Ollama models vary in JSON mode support — try with response_format first, fall back without
     use_json_mode = True
@@ -247,7 +256,7 @@ def annotate_record(
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=3000,
+                max_tokens=max_tokens,
             )
             if use_json_mode:
                 call_kwargs["response_format"] = {"type": "json_object"}
@@ -282,11 +291,28 @@ def annotate_record(
                 time.sleep(2)
         except Exception as e:
             err_str = str(e).lower()
+            if backend == "ollama" and ("timeout" in err_str or "timed out" in err_str):
+                print(
+                    f"  Ollama request timed out after {config.OLLAMA_REQUEST_TIMEOUT_SECONDS:.0f}s; skipping this record"
+                )
+                return None
             # Some Ollama models don't support response_format — retry without it
             if backend == "ollama" and use_json_mode and ("response_format" in err_str or "not supported" in err_str or "unknown" in err_str):
                 print(f"  Ollama: JSON mode not supported, retrying without response_format...")
                 use_json_mode = False
                 continue
+            if backend == "groq" and (
+                "tokens per day" in err_str
+                or "service tier" in err_str and "tokens" in err_str
+                or "code': 'rate_limit_exceeded'" in err_str and "requested" in err_str
+            ):
+                raise QuotaExhaustedError(str(e))
+            if backend == "groq" and ("rate limit" in err_str or "429" in err_str or "too many requests" in err_str):
+                if attempt < 2:
+                    wait_seconds = 60 * (attempt + 1)
+                    print(f"  Groq rate limited (attempt {attempt+1}); waiting {wait_seconds}s before retry...")
+                    time.sleep(wait_seconds)
+                    continue
             print(f"  {backend} API error (attempt {attempt+1}): {e}")
             if attempt < 2:
                 time.sleep(2 ** (attempt + 1))

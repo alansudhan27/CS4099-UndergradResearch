@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tech Debt Annotator</title>
+
+  <!-- Pico CSS (classless) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.classless.min.css" />
+  <!-- Highlight.js (github theme) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" />
+
+  <style>
+    :root {
+      --sidebar-w: 260px;
+      --nav-h: 56px;
+      --panel-gap: 1.5rem;
+      --radius: 8px;
+      --green: #2d9e5f;
+      --red: #d9534f;
+      --gold: #f5a623;
+      --grey: #888;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      background: #f5f6fa;
+      overflow: hidden; /* outer body never scrolls */
+    }
+
+    /* ── Top nav ── */
+    nav#topnav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+      height: var(--nav-h);
+      background: #1e293b;
+      color: #e2e8f0;
+      display: flex; align-items: center; gap: 1rem;
+      padding: 0 1rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    }
+    nav#topnav button {
+      padding: .35rem .75rem;
+      border-radius: var(--radius);
+      font-size: 13px;
+      cursor: pointer;
+      border: 1px solid #475569;
+      background: #334155;
+      color: #e2e8f0;
+      margin: 0;
+    }
+    nav#topnav button:hover { background: #475569; }
+    nav#topnav .record-label {
+      font-weight: 600; font-size: 13px; white-space: nowrap;
+    }
+    nav#topnav .progress-bar-wrap {
+      flex: 1; background: #334155; border-radius: 20px;
+      height: 10px; overflow: hidden; min-width: 80px;
+    }
+    nav#topnav .progress-bar-fill {
+      height: 100%; background: var(--green);
+      transition: width .4s ease;
+    }
+    nav#topnav .progress-label { font-size: 12px; white-space: nowrap; color: #94a3b8; }
+    nav#topnav .toast {
+      font-size: 12px; background: var(--green);
+      color: white; border-radius: var(--radius); padding: .2rem .6rem;
+      opacity: 0; transition: opacity .3s;
+    }
+    nav#topnav .toast.show { opacity: 1; }
+    #sidebar-toggle {
+      font-size: 18px; background: none; border: none; color: #94a3b8; cursor: pointer; padding: 0 .25rem;
+    }
+
+    /* ── App shell ── */
+    #shell {
+      display: flex;
+      height: 100vh;
+      padding-top: var(--nav-h);
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: var(--sidebar-w);
+      min-width: var(--sidebar-w);
+      background: #fff;
+      border-right: 1px solid #e2e8f0;
+      overflow-y: auto;
+      transition: width .25s, min-width .25s;
+      flex-shrink: 0;
+    }
+    #sidebar.collapsed { width: 0; min-width: 0; overflow: hidden; }
+    .sidebar-filter {
+      padding: .5rem .75rem;
+      position: sticky; top: 0; background: #fff; z-index: 10;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .sidebar-filter select {
+      width: 100%; font-size: 12px; padding: .25rem .4rem;
+      border: 1px solid #cbd5e1; border-radius: var(--radius); background: #f8fafc;
+    }
+    .sidebar-item {
+      padding: .45rem .75rem;
+      cursor: pointer;
+      border-bottom: 1px solid #f1f5f9;
+      display: flex; align-items: flex-start; gap: .4rem;
+    }
+    .sidebar-item:hover { background: #f1f5f9; }
+    .sidebar-item.active { background: #eff6ff; border-left: 3px solid #3b82f6; }
+    .sidebar-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 4px;
+    }
+    .dot-pending { background: #cbd5e1; }
+    .dot-success { background: var(--green); }
+    .dot-skipped { background: var(--gold); }
+    .dot-failed  { background: var(--red); }
+    .sidebar-meta { font-size: 11px; color: #64748b; word-break: break-all; line-height: 1.4; }
+    .sidebar-repo { font-size: 12px; font-weight: 600; color: #1e293b; }
+
+    /* ── Main content area ── */
+    #main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    /* ── Left panel ── */
+    #left-panel {
+      overflow-y: auto;
+      padding: var(--panel-gap);
+      background: #fff;
+      border-right: 1px solid #e2e8f0;
+    }
+
+    /* ── Right panel ── */
+    #right-panel {
+      overflow-y: auto;
+      padding: var(--panel-gap);
+      background: #fafbfd;
+    }
+
+    /* ── Section cards ── */
+    .card {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: var(--radius);
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    .card h3 {
+      margin: 0 0 .6rem; font-size: 13px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .05em; color: #64748b;
+    }
+
+    /* ── Record header ── */
+    .record-repo { font-weight: 700; font-size: 15px; color: #1e293b; }
+    .record-path { font-size: 12px; color: #64748b; word-break: break-all; }
+    .comment-quote {
+      background: #f8fafc; border-left: 3px solid #3b82f6;
+      padding: .5rem .75rem; border-radius: 0 var(--radius) var(--radius) 0;
+      font-style: italic; font-size: 13px; color: #374151; margin: .5rem 0;
+    }
+    .label-pill {
+      display: inline-block; background: #eff6ff; color: #1d4ed8;
+      border: 1px solid #bfdbfe; border-radius: 20px;
+      padding: .1rem .55rem; font-size: 11px; margin: .15rem .1rem;
+    }
+    .label-pill.rq1b { background: #fdf4ff; color: #7e22ce; border-color: #e9d5ff; }
+    .conf-low { color: #d97706; }
+
+    /* ── Complexity table ── */
+    .cc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .cc-table th, .cc-table td { padding: .3rem .5rem; border: 1px solid #e2e8f0; text-align: right; }
+    .cc-table th { background: #f8fafc; text-align: center; }
+    .cc-table td:first-child { text-align: left; font-weight: 600; }
+    .delta-pos { color: var(--red); font-weight: 700; }
+    .delta-neg { color: var(--green); font-weight: 700; }
+    .delta-zero { color: #94a3b8; }
+
+    /* ── Commit info ── */
+    .commit-block {
+      font-size: 12px; border: 1px solid #e2e8f0; border-radius: var(--radius);
+      padding: .5rem; margin-bottom: .5rem; background: #f8fafc;
+    }
+    .commit-sha { font-family: monospace; color: #6366f1; }
+    .commit-msg { font-weight: 600; color: #1e293b; }
+
+    /* ── Custom diff viewer ── */
+    .diff-view {
+      font-family: "Menlo", "Consolas", "Monaco", monospace;
+      font-size: 12.5px;
+      line-height: 1.5;
+      overflow-x: auto;
+      border: 1px solid #e2e8f0;
+      border-radius: var(--radius);
+      background: #fff;
+    }
+    .diff-view table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    .diff-view col.ln  { width: 44px; }
+    .diff-view col.code { width: calc(100% - 44px); }
+    .diff-view td {
+      padding: 0 8px;
+      white-space: pre;
+      vertical-align: top;
+      border: none;
+    }
+    .diff-view td.ln {
+      width: 44px;
+      min-width: 44px;
+      text-align: right;
+      color: #94a3b8;
+      user-select: none;
+      padding-right: 12px;
+      background: #f8fafc;
+      border-right: 1px solid #e2e8f0;
+    }
+    .diff-hunk-row td { background: #eff6ff; color: #3b82f6; padding: 1px 8px; }
+    .diff-add  td { background: #f0fdf4; }
+    .diff-add  td.ln { background: #dcfce7; color: #16a34a; }
+    .diff-add  td.code::before { content: '+'; color: #16a34a; margin-right: 4px; font-weight: 700; }
+    .diff-del  td { background: #fef2f2; }
+    .diff-del  td.ln { background: #fee2e2; color: #dc2626; }
+    .diff-del  td.code::before { content: '−'; color: #dc2626; margin-right: 4px; font-weight: 700; }
+    .diff-ctx  td.code::before { content: ' '; margin-right: 4px; }
+    .diff-view tr:hover td { filter: brightness(.97); }
+
+    /* ── Annotation form ── */
+    .form-section { margin-bottom: 1.25rem; }
+    .form-section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: #64748b; margin-bottom: .5rem;
+      padding-bottom: .25rem; border-bottom: 1px solid #e2e8f0;
+    }
+
+    /* Checkbox rows */
+    .check-row { display: flex; align-items: flex-start; gap: .5rem; margin-bottom: .4rem; }
+    .check-row input[type=checkbox] { margin-top: 2px; flex-shrink: 0; }
+    .check-row label { font-size: 13px; color: #1e293b; cursor: pointer; }
+
+    /* Radio groups */
+    .radio-group { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .4rem; }
+    .radio-btn {
+      padding: .3rem .7rem; border-radius: 20px; font-size: 12px; cursor: pointer;
+      border: 1px solid #cbd5e1; background: #f8fafc; color: #374151;
+      user-select: none; transition: all .15s;
+    }
+    .radio-btn:hover { border-color: #3b82f6; color: #1d4ed8; }
+    .radio-btn.selected { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+    .radio-btn.positive.selected { background: var(--green); border-color: var(--green); }
+    .radio-btn.negative.selected { background: var(--red); border-color: var(--red); }
+    .radio-btn.mixed.selected { background: var(--gold); border-color: var(--gold); }
+
+    /* Textareas */
+    textarea.reason {
+      width: 100%; min-height: 56px; font-size: 12px;
+      border: 1px solid #cbd5e1; border-radius: var(--radius);
+      padding: .4rem .5rem; resize: vertical; background: #fff;
+      margin-top: .25rem; color: #1e293b;
+    }
+    textarea.reason:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px #bfdbfe; }
+
+    /* Star rating */
+    .stars { display: flex; gap: 2px; cursor: pointer; margin-bottom: .3rem; }
+    .star { font-size: 20px; color: #cbd5e1; transition: color .1s; user-select: none; }
+    .star.lit, .star:hover ~ .star { color: #f5a623; }
+    .star.lit { color: #f5a623; }
+
+    /* Confidence slider */
+    .conf-row { display: flex; align-items: center; gap: .5rem; }
+    input[type=range] { flex: 1; }
+    .conf-val { font-weight: 700; color: #3b82f6; font-size: 13px; min-width: 30px; }
+
+    /* Save buttons */
+    .save-row { display: flex; gap: .5rem; margin-top: 1rem; }
+    .btn-suggest {
+      padding: .4rem .9rem; background: #4338ca; color: #fff; border: none;
+      border-radius: var(--radius); font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: background .15s;
+    }
+    .btn-suggest:hover { background: #3730a3; }
+    .btn-suggest:disabled { background: #a5b4fc; cursor: not-allowed; }
+    .btn-primary {
+      flex: 1; padding: .6rem; background: #3b82f6; color: #fff; border: none;
+      border-radius: var(--radius); font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: background .15s;
+    }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-secondary {
+      padding: .6rem 1rem; background: #f1f5f9; color: #374151;
+      border: 1px solid #cbd5e1; border-radius: var(--radius);
+      font-size: 13px; cursor: pointer;
+    }
+    .btn-secondary:hover { background: #e2e8f0; }
+
+    /* No-debt toggle */
+    .no-debt-banner {
+      background: #f0fdf4; border: 1px solid #86efac; border-radius: var(--radius);
+      padding: .5rem .75rem; display: flex; align-items: center; gap: .5rem;
+      margin-bottom: 1rem;
+    }
+    .no-debt-banner input { margin: 0; }
+    .no-debt-banner label { font-size: 13px; font-weight: 600; color: #166534; cursor: pointer; }
+
+    /* Collapsed inline reason */
+    .cat-row { margin-bottom: .5rem; }
+    .cat-label { display: flex; align-items: center; gap: .5rem; cursor: pointer; font-size: 13px; }
+    .cat-reason { margin-left: 1.4rem; margin-top: .2rem; }
+
+    /* Loading state */
+    #loading-overlay {
+      position: fixed; inset: 0; background: rgba(255,255,255,.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000; font-size: 18px; color: #3b82f6;
+    }
+    #loading-overlay.hidden { display: none; }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<div id="loading-overlay">Loading dataset…</div>
+
+<!-- ── Top Nav ── -->
+<nav id="topnav" x-data="navState()">
+  <button id="sidebar-toggle" @click="$dispatch('toggle-sidebar')" title="Toggle sidebar">☰</button>
+  <button @click="navigate('prev')" title="Previous (Alt+←)">← Prev</button>
+  <span class="record-label" x-text="navLabel"></span>
+  <button @click="navigate('skip')" title="Skip this record" style="background:#4b1c1c;border-color:#7f1d1d;">Skip</button>
+  <button @click="navigate('next')" title="Next (Alt+→)">Next →</button>
+  <div class="progress-bar-wrap">
+    <div class="progress-bar-fill" :style="`width:${progress.pct}%`"></div>
+  </div>
+  <span class="progress-label" x-text="`${progress.annotated}/${progress.total} annotated`"></span>
+  <span class="toast" :class="{show: toastVisible}" x-text="toastMsg"></span>
+</nav>
+
+<!-- ── App shell ── -->
+<div id="shell">
+
+  <!-- ── Sidebar ── -->
+  <div id="sidebar" x-data="sidebarState()" @toggle-sidebar.window="toggle()" @record-loaded.window="setActive($event.detail)">
+    <div class="sidebar-filter">
+      <select x-model="filter" @change="applyFilter()">
+        <option value="all">All records</option>
+        <option value="pending">Pending only</option>
+        <option value="success">Annotated only</option>
+        <option value="skipped">Skipped only</option>
+      </select>
+    </div>
+    <template x-for="r in filtered" :key="r.idx">
+      <div class="sidebar-item" :class="{active: r.idx === activeIdx}" @click="$dispatch('load-record', {idx: r.idx})">
+        <div class="sidebar-dot" :class="`dot-${r.status}`"></div>
+        <div>
+          <div class="sidebar-repo" x-text="r.repo.split('/')[1] || r.repo"></div>
+          <div class="sidebar-meta" x-text="r.path.split('/').slice(-1)[0] + ':' + r.line"></div>
+          <div class="sidebar-meta" x-text="r.sample_group"></div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <!-- ── Main ── -->
+  <div id="main">
+
+    <!-- ── Left panel ── -->
+    <div id="left-panel" x-data="leftPanel()" @load-record.window="load($event.detail.idx)">
+      <template x-if="record">
+
+        <div>
+          <!-- Header -->
+          <div class="card">
+            <div class="record-repo" x-text="record.repo_full_name"></div>
+            <div class="record-path" x-text="record.path + ' · line ' + record.line"></div>
+            <div style="margin-top:.5rem">
+              <span class="label-pill" :class="{}" x-text="record.existing_labels?.rq1a?.pred_label"></span>
+              <span class="label-pill rq1b" x-text="record.existing_labels?.rq1b?.pred_label"></span>
+              <span class="label-pill" :class="{'conf-low': record.existing_labels?.rq1a?.confidence < 0.7}"
+                x-text="'rq1a conf: ' + (record.existing_labels?.rq1a?.confidence * 100).toFixed(0) + '%'"></span>
+            </div>
+            <div class="comment-quote" x-text="record.original_comment"></div>
+            <template x-if="record.original_commits?.first_commit">
+              <div style="font-size:12px;color:#64748b;margin-top:.4rem">
+                <span x-text="record.original_commits.first_commit.author"></span> ·
+                <span x-text="record.original_commits.first_commit.date?.slice(0,10)"></span> ·
+                <a :href="record.html_url" target="_blank" style="color:#3b82f6">View on GitHub ↗</a>
+              </div>
+            </template>
+          </div>
+
+          <!-- Diff -->
+          <div class="card">
+            <h3>Code Diff</h3>
+            <div id="diff-container"></div>
+            <template x-if="!record.original_commits?.first_commit?.patch">
+              <p style="color:#94a3b8;font-size:12px">No patch available.</p>
+            </template>
+          </div>
+
+          <!-- Complexity -->
+          <div class="card">
+            <h3>Complexity Metrics</h3>
+            <template x-if="record.complexity_metrics?.error">
+              <p style="color:var(--red);font-size:12px" x-text="'Error: ' + record.complexity_metrics.error"></p>
+            </template>
+            <table class="cc-table">
+              <thead><tr><th>Metric</th><th>Before</th><th>After</th><th>Delta</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td>CC avg</td>
+                  <td x-text="fmt(record.complexity_metrics?.before_avg_complexity)"></td>
+                  <td x-text="fmt(record.complexity_metrics?.after_avg_complexity)"></td>
+                  <td :class="deltaClass(record.complexity_metrics?.delta_avg)" x-text="fmtDelta(record.complexity_metrics?.delta_avg)"></td>
+                </tr>
+                <tr>
+                  <td>CC max</td>
+                  <td x-text="fmt(record.complexity_metrics?.before_max_complexity)"></td>
+                  <td x-text="fmt(record.complexity_metrics?.after_max_complexity)"></td>
+                  <td :class="deltaClass(record.complexity_metrics?.delta_max)" x-text="fmtDelta(record.complexity_metrics?.delta_max)"></td>
+                </tr>
+                <tr>
+                  <td>NLOC</td>
+                  <td x-text="record.complexity_metrics?.before_nloc ?? '—'"></td>
+                  <td x-text="record.complexity_metrics?.after_nloc ?? '—'"></td>
+                  <td :class="deltaClass(record.complexity_metrics?.delta_nloc)" x-text="fmtDelta(record.complexity_metrics?.delta_nloc)"></td>
+                </tr>
+                <tr>
+                  <td>Functions</td>
+                  <td x-text="record.complexity_metrics?.before_functions?.length ?? '—'"></td>
+                  <td x-text="record.complexity_metrics?.after_functions?.length ?? '—'"></td>
+                  <td :class="deltaClass(record.complexity_metrics?.delta_functions)" x-text="fmtDelta(record.complexity_metrics?.delta_functions)"></td>
+                </tr>
+                <tr>
+                  <td>Lines added/removed</td>
+                  <td colspan="2" style="text-align:center">—</td>
+                  <td style="color:#3b82f6;font-weight:700" x-text="'+' + (record.lines_added ?? 0) + ' / -' + (record.lines_removed ?? 0)"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Subsequent commits -->
+          <template x-if="hasSubsequent()">
+            <div class="card">
+              <h3>Subsequent Commits</h3>
+              <template x-if="record.original_commits?.second_commit">
+                <div class="commit-block">
+                  <div><span class="commit-sha" x-text="record.original_commits.second_commit.sha?.slice(0,7)"></span>
+                    · <span class="commit-msg" x-text="record.original_commits.second_commit.message?.slice(0,120)"></span></div>
+                  <div style="color:#64748b;font-size:11px" x-text="record.original_commits.second_commit.author + ' · ' + record.original_commits.second_commit.date?.slice(0,10)"></div>
+                </div>
+              </template>
+              <template x-for="c in (record.original_commits?.other_commits || []).slice(0,3)">
+                <div class="commit-block">
+                  <div><span class="commit-sha" x-text="c.sha?.slice(0,7)"></span>
+                    · <span class="commit-msg" x-text="c.message?.slice(0,120)"></span></div>
+                  <div style="color:#64748b;font-size:11px" x-text="c.author + ' · ' + c.date?.slice(0,10)"></div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Baseline commits -->
+          <template x-if="record.baseline_commits?.length">
+            <div class="card">
+              <h3>Baseline Commits</h3>
+              <template x-for="b in record.baseline_commits">
+                <div class="commit-block">
+                  <div><span class="commit-sha" x-text="b.sha?.slice(0,7)"></span>
+                    · <span class="commit-msg" x-text="b.message?.slice(0,100)"></span></div>
+                  <div style="color:#64748b;font-size:11px" x-text="'CC avg: ' + (b.complexity_avg||'—') + ' · +' + (b.lines_added||0) + '/-' + (b.lines_removed||0)"></div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+      </template>
+      <template x-if="!record">
+        <p style="color:#94a3b8;text-align:center;margin-top:4rem">Select a record from the sidebar or use Prev/Next.</p>
+      </template>
+    </div><!-- /left-panel -->
+
+    <!-- ── Right panel (annotation form) ── -->
+    <div id="right-panel" x-data="annotationForm()" @load-record.window="loadFor($event.detail.idx)">
+
+      <template x-if="recordIdx !== null">
+        <div>
+
+          <!-- No-debt toggle -->
+          <div class="no-debt-banner">
+            <input type="checkbox" id="no-debt" x-model="form.no_debt_detected" />
+            <label for="no-debt">No Tech Debt Detected — skip all categories</label>
+          </div>
+
+          <!-- Debt categories -->
+          <div class="form-section" x-show="!form.no_debt_detected">
+            <div class="form-section-title">Debt Categories</div>
+            <template x-for="cat in CATEGORIES" :key="cat">
+              <div class="cat-row">
+                <label class="cat-label">
+                  <input type="checkbox" :value="cat" x-model="form.debt_categories" />
+                  <span x-text="cat"></span>
+                </label>
+                <div class="cat-reason" x-show="form.debt_categories.includes(cat)">
+                  <textarea class="reason" placeholder="Reasoning for this category…"
+                    x-model="form.debt_category_reasoning[cat]" rows="2"></textarea>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Developer awareness -->
+          <div class="form-section" x-show="!form.no_debt_detected">
+            <div class="form-section-title">Developer Awareness</div>
+            <div class="radio-group">
+              <template x-for="opt in ['aware','partially_aware','unaware']">
+                <span class="radio-btn" :class="{selected: form.developer_awareness === opt}"
+                  @click="form.developer_awareness = opt" x-text="opt.replace('_',' ')"></span>
+              </template>
+            </div>
+            <textarea class="reason" placeholder="Reasoning…" x-model="form.developer_awareness_reasoning" rows="2"></textarea>
+          </div>
+
+          <!-- Overall assessment -->
+          <div class="form-section">
+            <div class="form-section-title">Overall Assessment</div>
+            <div class="radio-group">
+              <span class="radio-btn positive" :class="{selected: form.overall_assessment==='positive'}"
+                @click="form.overall_assessment='positive'">Positive</span>
+              <span class="radio-btn negative" :class="{selected: form.overall_assessment==='negative'}"
+                @click="form.overall_assessment='negative'">Negative</span>
+              <span class="radio-btn mixed" :class="{selected: form.overall_assessment==='mixed'}"
+                @click="form.overall_assessment='mixed'">Mixed</span>
+            </div>
+            <textarea class="reason" placeholder="Overall reasoning…" x-model="form.overall_reasoning" rows="2"></textarea>
+          </div>
+
+          <!-- Quality scores -->
+          <div class="form-section" x-show="!form.no_debt_detected">
+            <div class="form-section-title">Quality Scores</div>
+            <div style="margin-bottom:.75rem">
+              <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:.2rem">Code Quality (1–5)</div>
+              <div class="stars">
+                <template x-for="n in [1,2,3,4,5]" :key="n">
+                  <span class="star" :class="{lit: n <= form.code_quality_score}"
+                    @click="form.code_quality_score = n" x-text="'★'"></span>
+                </template>
+              </div>
+              <textarea class="reason" placeholder="Code quality reasoning…" x-model="form.code_quality_reasoning" rows="2"></textarea>
+            </div>
+            <div>
+              <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:.2rem">AI Suggestion Quality (1–5)</div>
+              <div class="stars">
+                <template x-for="n in [1,2,3,4,5]" :key="n">
+                  <span class="star" :class="{lit: n <= form.ai_suggestion_quality}"
+                    @click="form.ai_suggestion_quality = n" x-text="'★'"></span>
+                </template>
+              </div>
+              <textarea class="reason" placeholder="AI suggestion quality reasoning…" x-model="form.ai_suggestion_quality_reasoning" rows="2"></textarea>
+            </div>
+          </div>
+
+          <!-- AI flags -->
+          <div class="form-section" x-show="!form.no_debt_detected">
+            <div class="form-section-title">AI Flags</div>
+            <div class="cat-row" style="margin-bottom:.5rem">
+              <div class="cat-label">
+                <input type="checkbox" id="ai-mistake" x-model="form.ai_made_mistake" />
+                <label for="ai-mistake">AI Made a Mistake</label>
+              </div>
+              <div class="cat-reason" x-show="form.ai_made_mistake">
+                <textarea class="reason" placeholder="Describe the mistake…" x-model="form.ai_mistake_description" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="cat-row">
+              <div class="cat-label">
+                <input type="checkbox" id="ai-complexity" x-model="form.ai_added_complexity" />
+                <label for="ai-complexity">AI Added Unnecessary Complexity</label>
+              </div>
+              <div class="cat-reason" x-show="form.ai_added_complexity">
+                <textarea class="reason" placeholder="Describe the complexity issue…" x-model="form.ai_complexity_description" rows="2"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- Change flags -->
+          <div class="form-section">
+            <div class="form-section-title">Change Flags</div>
+            <div class="cat-row" style="margin-bottom:.5rem">
+              <div class="cat-label">
+                <input type="checkbox" id="adds-complexity" x-model="form.adds_complexity" />
+                <label for="adds-complexity">Change Adds Complexity</label>
+              </div>
+              <div class="cat-reason" x-show="form.adds_complexity">
+                <textarea class="reason" placeholder="Explain complexity increase…" x-model="form.complexity_explanation" rows="2"></textarea>
+              </div>
+            </div>
+            <div class="cat-row">
+              <div class="cat-label">
+                <input type="checkbox" id="fix-evidence" x-model="form.evidence_of_subsequent_fixes" />
+                <label for="fix-evidence">Evidence of Subsequent Fixes</label>
+              </div>
+              <div class="cat-reason" x-show="form.evidence_of_subsequent_fixes">
+                <textarea class="reason" placeholder="Describe the fix commits…" x-model="form.fix_description" rows="2"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- Confidence -->
+          <div class="form-section">
+            <div class="form-section-title">Confidence</div>
+            <div class="conf-row">
+              <input type="range" min="0" max="1" step="0.05" x-model.number="form.confidence" />
+              <span class="conf-val" x-text="(form.confidence * 100).toFixed(0) + '%'"></span>
+            </div>
+          </div>
+
+          <!-- Notes / evidence -->
+          <div class="form-section">
+            <div class="form-section-title">Notes &amp; Evidence Citations</div>
+            <textarea class="reason" placeholder="Free-text notes, code references, evidence…"
+              x-model="form.evidence_citations_text" rows="5"></textarea>
+          </div>
+
+          <!-- LLM Suggest -->
+          <div style="margin-top:1rem;padding:1rem;background:#f0f4ff;border:1px solid #c7d2fe;border-radius:var(--radius)">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#4338ca;margin-bottom:.5rem">
+              Auto-populate for Fact-checking
+            </div>
+            <div style="font-size:12px;color:#374151;margin-bottom:.6rem">
+              Run an LLM on this record to pre-fill the form. Review each field — the LLM can be wrong.
+            </div>
+            <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+              <select x-model="suggestBackend" style="font-size:12px;padding:.3rem .5rem;border:1px solid #c7d2fe;border-radius:var(--radius);background:#fff">
+                <option value="groq">Groq (cloud)</option>
+                <option value="ollama">Ollama (local)</option>
+              </select>
+              <button class="btn-suggest" @click="suggestFill()" :disabled="suggesting"
+                x-text="suggesting ? 'Fetching…' : '✦ Suggest with LLM'"></button>
+            </div>
+            <div x-show="suggestError" style="color:var(--red);font-size:12px;margin-top:.4rem" x-text="suggestError"></div>
+            <div x-show="suggestDone && !suggestError" style="color:var(--green);font-size:12px;margin-top:.4rem">
+              ✓ Form pre-filled — review carefully before saving.
+            </div>
+          </div>
+
+          <!-- Save buttons -->
+          <div class="save-row">
+            <button class="btn-primary" @click="saveAndNext()" :disabled="saving" x-text="saving ? 'Saving…' : 'Save & Next →'"></button>
+            <button class="btn-secondary" @click="saveOnly()" :disabled="saving">Save</button>
+          </div>
+
+        </div><!-- /form wrapper -->
+      </template>
+
+      <template x-if="recordIdx === null">
+        <p style="color:#94a3b8;text-align:center;margin-top:4rem;font-size:13px">
+          Load a record to begin annotating.
+        </p>
+      </template>
+
+    </div><!-- /right-panel -->
+
+  </div><!-- /main -->
+</div><!-- /shell -->
+
+<!-- ── Scripts ── -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+<script>
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const CATEGORIES = [
+  "Complexity of change",
+  "Size of change",
+  "Programmer didn't know the codebase",
+  "Programmer didn't know the skill/language",
+  "AI hallucination / incorrect suggestion",
+  "Lack of testing",
+  "Over-reliance on AI without review",
+];
+
+// ── Shared state ───────────────────────────────────────────────────────────
+
+let _allRecords = [];     // minimal sidebar data
+let _currentIdx = -1;     // index into _allRecords
+
+function pendingRecords() {
+  return _allRecords.filter(r => r.status === 'pending');
+}
+
+// ── API helpers ───────────────────────────────────────────────────────────
+
+async function apiGet(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function apiPost(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+
+async function boot() {
+  _allRecords = await apiGet('/api/records');
+  document.getElementById('loading-overlay').classList.add('hidden');
+
+  // Load first pending record
+  const first = _allRecords.find(r => r.status === 'pending') || _allRecords[0];
+  if (first) {
+    _currentIdx = first.idx;
+    window.dispatchEvent(new CustomEvent('load-record', {detail: {idx: first.idx}}));
+  }
+  window.dispatchEvent(new CustomEvent('progress-updated'));
+}
+
+document.addEventListener('DOMContentLoaded', boot);
+
+// ── Diff rendering ─────────────────────────────────────────────────────────
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderDiff(patch) {
+  const el = document.getElementById('diff-container');
+  if (!el) return;
+  el.innerHTML = '';
+  if (!patch) { el.innerHTML = '<p style="color:#94a3b8;padding:1rem;font-size:13px">No diff available.</p>'; return; }
+
+  // Parse unified diff into rows
+  const lines = patch.split('\n');
+  let beforeLn = 0, afterLn = 0;
+  const rows = [];
+
+  for (const raw of lines) {
+    if (raw.startsWith('---') || raw.startsWith('+++')) continue; // skip file headers
+    if (raw.startsWith('@@')) {
+      // Parse hunk header: @@ -a,b +c,d @@
+      const m = raw.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (m) { beforeLn = parseInt(m[1]); afterLn = parseInt(m[2]); }
+      rows.push({type: 'hunk', text: raw});
+      continue;
+    }
+    if (raw.startsWith('+')) {
+      rows.push({type: 'add', after: afterLn++, text: raw.slice(1)});
+    } else if (raw.startsWith('-')) {
+      rows.push({type: 'del', before: beforeLn++, text: raw.slice(1)});
+    } else {
+      rows.push({type: 'ctx', before: beforeLn++, after: afterLn++, text: raw.slice(1) || raw});
+    }
+  }
+
+  // Build table
+  let html = '<div class="diff-view"><table><colgroup><col class="ln"><col class="code"></colgroup><tbody>';
+  for (const r of rows) {
+    if (r.type === 'hunk') {
+      html += `<tr class="diff-hunk-row"><td class="ln"></td><td class="code">${esc(r.text)}</td></tr>`;
+    } else if (r.type === 'add') {
+      html += `<tr class="diff-add"><td class="ln">${r.after}</td><td class="code">${esc(r.text)}</td></tr>`;
+    } else if (r.type === 'del') {
+      html += `<tr class="diff-del"><td class="ln">${r.before}</td><td class="code">${esc(r.text)}</td></tr>`;
+    } else {
+      html += `<tr class="diff-ctx"><td class="ln">${r.before}</td><td class="code">${esc(r.text)}</td></tr>`;
+    }
+  }
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
+}
+
+// ── Alpine components ──────────────────────────────────────────────────────
+
+function navState() {
+  return {
+    navLabel: 'Loading…',
+    progress: {annotated: 0, total: 0, pct: 0},
+    toastVisible: false,
+    toastMsg: 'Saved!',
+
+    async init() {
+      await this.refreshProgress();
+      window.addEventListener('progress-updated', () => this.refreshProgress());
+      window.addEventListener('load-record', (e) => {
+        _currentIdx = e.detail.idx;
+        const r = _allRecords[_currentIdx];
+        this.navLabel = `Record ${_currentIdx + 1} / ${_allRecords.length} · ${r?.sample_group || ''}`;
+      });
+      // Keyboard shortcuts
+      window.addEventListener('keydown', (e) => {
+        if (e.altKey && e.key === 'ArrowLeft') this.navigate('prev');
+        if (e.altKey && e.key === 'ArrowRight') this.navigate('next');
+      });
+    },
+
+    async refreshProgress() {
+      const p = await apiGet('/api/progress');
+      this.progress = {...p, pct: p.total ? (p.annotated / p.total) * 100 : 0};
+    },
+
+    navigate(dir) {
+      if (!_allRecords.length) return;
+      let nextIdx = _currentIdx;
+      if (dir === 'prev') {
+        nextIdx = Math.max(0, _currentIdx - 1);
+      } else if (dir === 'next') {
+        nextIdx = Math.min(_allRecords.length - 1, _currentIdx + 1);
+      } else if (dir === 'skip') {
+        const curIdx = _currentIdx;
+        apiPost(`/api/record/${curIdx}/skip`, {}).then(() => {
+          _allRecords[curIdx].status = 'skipped';
+          window.dispatchEvent(new CustomEvent('progress-updated'));
+          window.dispatchEvent(new CustomEvent('sidebar-refresh'));
+          this.navigate('next-pending');
+        });
+        return;
+      } else if (dir === 'next-pending') {
+        const after = _allRecords.slice(_currentIdx + 1).find(r => r.status === 'pending');
+        if (after) nextIdx = after.idx;
+        else return;
+      }
+      if (nextIdx !== _currentIdx) {
+        _currentIdx = nextIdx;
+        window.dispatchEvent(new CustomEvent('load-record', {detail: {idx: nextIdx}}));
+      }
+    },
+
+    showToast(msg = 'Saved!') {
+      this.toastMsg = msg;
+      this.toastVisible = true;
+      setTimeout(() => this.toastVisible = false, 2000);
+    },
+  };
+}
+
+function sidebarState() {
+  return {
+    filter: 'all',
+    filtered: [],
+    activeIdx: -1,
+
+    init() {
+      this.applyFilter();
+      window.addEventListener('load-record', (e) => { this.activeIdx = e.detail.idx; });
+      window.addEventListener('sidebar-refresh', () => this.applyFilter());
+      window.addEventListener('progress-updated', () => this.applyFilter());
+    },
+
+    toggle() {
+      const el = document.getElementById('sidebar');
+      el.classList.toggle('collapsed');
+    },
+
+    setActive(idx) { this.activeIdx = idx; },
+
+    applyFilter() {
+      if (this.filter === 'all') this.filtered = [..._allRecords];
+      else this.filtered = _allRecords.filter(r => r.status === this.filter);
+    },
+  };
+}
+
+function leftPanel() {
+  return {
+    record: null,
+
+    async load(idx) {
+      this.record = await apiGet(`/api/record/${idx}`);
+      window.dispatchEvent(new CustomEvent('record-loaded', {detail: idx}));
+      // Render diff after DOM update
+      this.$nextTick(() => {
+        const patch = this.record?.original_commits?.first_commit?.patch || '';
+        renderDiff(patch);
+      });
+    },
+
+    hasSubsequent() {
+      return this.record?.original_commits?.second_commit ||
+             this.record?.original_commits?.other_commits?.length;
+    },
+
+    fmt(v) { return v == null ? '—' : Number(v).toFixed(2); },
+    fmtDelta(v) {
+      if (v == null) return '—';
+      const n = Number(v);
+      return n > 0 ? `+${n.toFixed(2)}` : n.toFixed(2);
+    },
+    deltaClass(v) {
+      const n = Number(v);
+      if (!v && v !== 0) return '';
+      if (n > 0) return 'delta-pos';
+      if (n < 0) return 'delta-neg';
+      return 'delta-zero';
+    },
+  };
+}
+
+function annotationForm() {
+  return {
+    recordIdx: null,
+    saving: false,
+    suggesting: false,
+    suggestBackend: 'groq',
+    suggestError: '',
+    suggestDone: false,
+    CATEGORIES,
+    form: emptyForm(),
+
+    async loadFor(idx) {
+      this.recordIdx = idx;
+      this.suggestError = '';
+      this.suggestDone = false;
+      const rec = await apiGet(`/api/record/${idx}`);
+      if (rec.tech_debt_analysis) {
+        this.form = formFromAnalysis(rec.tech_debt_analysis);
+      } else {
+        this.form = emptyForm();
+      }
+      // Ctrl+Enter shortcut (re-register each load)
+      window.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); this.saveAndNext(); }
+      }, {once: true});
+    },
+
+    async suggestFill() {
+      this.suggesting = true;
+      this.suggestError = '';
+      this.suggestDone = false;
+      try {
+        const result = await apiPost(`/api/record/${this.recordIdx}/suggest`, {backend: this.suggestBackend});
+        if (result.error) {
+          this.suggestError = result.error;
+          return;
+        }
+        this.form = formFromAnalysis(result);
+        this.suggestDone = true;
+      } catch (e) {
+        this.suggestError = 'Request failed: ' + e.message;
+      } finally {
+        this.suggesting = false;
+      }
+    },
+
+    async saveOnly() {
+      this.saving = true;
+      try {
+        await apiPost(`/api/record/${this.recordIdx}/annotate`, buildPayload(this.form));
+        _allRecords[this.recordIdx].status = 'success';
+        window.dispatchEvent(new CustomEvent('progress-updated'));
+        window.dispatchEvent(new CustomEvent('sidebar-refresh'));
+        window.dispatchEvent(new CustomEvent('show-toast'));
+      } finally {
+        this.saving = false;
+      }
+    },
+
+    async saveAndNext() {
+      await this.saveOnly();
+      // Find next pending
+      const after = _allRecords.slice(_currentIdx + 1).find(r => r.status === 'pending');
+      if (after) {
+        _currentIdx = after.idx;
+        window.dispatchEvent(new CustomEvent('load-record', {detail: {idx: after.idx}}));
+      }
+    },
+  };
+}
+
+// ── Form helpers ──────────────────────────────────────────────────────────
+
+function emptyForm() {
+  return {
+    no_debt_detected: false,
+    debt_categories: [],
+    debt_category_reasoning: {},
+    developer_awareness: '',
+    developer_awareness_reasoning: '',
+    overall_assessment: '',
+    overall_reasoning: '',
+    adds_complexity: false,
+    complexity_explanation: '',
+    evidence_of_subsequent_fixes: false,
+    fix_description: '',
+    code_quality_score: 0,
+    code_quality_reasoning: '',
+    confidence: 0.75,
+    evidence_citations_text: '',
+    ai_made_mistake: false,
+    ai_mistake_description: '',
+    ai_added_complexity: false,
+    ai_complexity_description: '',
+    ai_suggestion_quality: 0,
+    ai_suggestion_quality_reasoning: '',
+  };
+}
+
+function formFromAnalysis(a) {
+  const citations = (a.evidence_citations || [])
+    .map(c => [c.claim, c.code_reference, c.explanation].filter(Boolean).join('\n'))
+    .join('\n---\n');
+  return {
+    no_debt_detected: a.no_debt_detected ?? false,
+    debt_categories: a.debt_categories ?? [],
+    debt_category_reasoning: a.debt_category_reasoning ?? {},
+    developer_awareness: a.developer_awareness ?? '',
+    developer_awareness_reasoning: a.developer_awareness_reasoning ?? '',
+    overall_assessment: a.overall_assessment ?? '',
+    overall_reasoning: a.overall_reasoning ?? '',
+    adds_complexity: a.adds_complexity ?? false,
+    complexity_explanation: a.complexity_explanation ?? '',
+    evidence_of_subsequent_fixes: a.evidence_of_subsequent_fixes ?? false,
+    fix_description: a.fix_description ?? '',
+    code_quality_score: a.code_quality_score ?? 0,
+    code_quality_reasoning: a.code_quality_reasoning ?? '',
+    confidence: a.confidence ?? 0.75,
+    evidence_citations_text: citations,
+    ai_made_mistake: a.ai_made_mistake ?? false,
+    ai_mistake_description: a.ai_mistake_description ?? '',
+    ai_added_complexity: a.ai_added_complexity ?? false,
+    ai_complexity_description: a.ai_complexity_description ?? '',
+    ai_suggestion_quality: a.ai_suggestion_quality ?? 0,
+    ai_suggestion_quality_reasoning: a.ai_suggestion_quality_reasoning ?? '',
+  };
+}
+
+function buildPayload(form) {
+  // Convert evidence_citations_text to list
+  const citationsText = form.evidence_citations_text || '';
+  const citations = citationsText.trim()
+    ? citationsText.split('---').map(s => ({claim: s.trim(), code_reference: '', explanation: ''}))
+    : [];
+  return {
+    no_debt_detected: form.no_debt_detected,
+    debt_categories: form.debt_categories,
+    debt_category_reasoning: form.debt_category_reasoning,
+    developer_awareness: form.developer_awareness,
+    developer_awareness_reasoning: form.developer_awareness_reasoning,
+    overall_assessment: form.overall_assessment,
+    overall_reasoning: form.overall_reasoning,
+    adds_complexity: form.adds_complexity,
+    complexity_explanation: form.complexity_explanation,
+    evidence_of_subsequent_fixes: form.evidence_of_subsequent_fixes,
+    fix_description: form.fix_description || null,
+    code_quality_score: form.code_quality_score,
+    code_quality_reasoning: form.code_quality_reasoning,
+    confidence: form.confidence,
+    evidence_citations: citations,
+    ai_made_mistake: form.ai_made_mistake,
+    ai_mistake_description: form.ai_mistake_description,
+    ai_added_complexity: form.ai_added_complexity,
+    ai_complexity_description: form.ai_complexity_description,
+    ai_suggestion_quality: form.ai_suggestion_quality,
+    ai_suggestion_quality_reasoning: form.ai_suggestion_quality_reasoning,
+  };
+}
+
+// Wire up toast to nav state (Alpine custom event)
+window.addEventListener('show-toast', () => {
+  window.dispatchEvent(new CustomEvent('trigger-toast'));
+});
+</script>
+
+<!-- Patch navState to listen for show-toast -->
+<script>
+  document.addEventListener('alpine:init', () => {
+    Alpine.magic('toast', () => (msg) => {
+      window.dispatchEvent(new CustomEvent('trigger-toast', {detail: msg}));
+    });
+  });
+</script>
+
+<!-- Wire toast into navState via window event -->
+<script>
+  window.addEventListener('trigger-toast', (e) => {
+    // Find the navState component and show toast
+    const nav = document.querySelector('#topnav');
+    if (nav && nav._x_dataStack) {
+      const data = Alpine.$data(nav);
+      if (data) data.showToast(e.detail || 'Saved!');
+    }
+  });
+</script>
+
+</body>
+</html>

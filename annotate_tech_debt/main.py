@@ -14,7 +14,7 @@ from .github_context import (
     gather_github_context, fetch_baseline_commits, count_lines_from_patch,
     get_api_call_count,
 )
-from .groq_annotator import annotate_record
+from .groq_annotator import annotate_record, QuotaExhaustedError
 from .diff_parser import parse_patch, detect_language
 from .complexity import compute_complexity_delta
 
@@ -469,21 +469,39 @@ def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
         print(f"Backend: Groq ({config.GROQ_MODEL})")
         print(f"Estimated time: {est_minutes:.0f} min at {rpm} rpm (+ retries)")
 
+    # Persist annotated records incrementally so resume never loses progress.
+    annotated_json_path = config.ANNOTATION_REPORT_PATH.with_suffix(".json")
+
     # Handle resume
     completed_annotations = {}
     completed_ids = set()
     if resume:
         completed_ids = _load_progress(ANNOTATE_PROGRESS_FILE)
-        # Load previously annotated data
-        if config.ANNOTATION_REPORT_PATH.with_suffix(".json").exists():
+        # Load previously checkpointed annotation data
+        if annotated_json_path.exists():
             try:
-                with open(config.ANNOTATION_REPORT_PATH.with_suffix(".json"), "r") as f:
+                with open(annotated_json_path, "r", encoding="utf-8") as f:
                     for r in json.load(f):
                         if r.get("annotation_status") == "success":
                             completed_annotations[r["id"]] = r
-                            completed_ids.add(r["id"])
+                        # Keep all prior statuses so resume preserves context.
+                        elif r.get("annotation_status") in {"failed", "skipped"}:
+                            completed_annotations[r["id"]] = r
             except (json.JSONDecodeError, KeyError):
                 pass
+
+        # Reconcile progress IDs with checkpointed records.
+        # If a run was interrupted before JSON checkpoint was written, don't skip unseen IDs.
+        checkpoint_ids = set(completed_annotations.keys())
+        dangling_progress_ids = completed_ids - checkpoint_ids
+        if dangling_progress_ids:
+            print(
+                f"Resume note: {len(dangling_progress_ids)} progress IDs had no checkpointed records; "
+                "they will be re-annotated."
+            )
+            completed_ids -= dangling_progress_ids
+
+        completed_ids |= checkpoint_ids
         if completed_ids:
             print(f"Resuming: {len(completed_ids)} records already annotated")
 
@@ -506,6 +524,7 @@ def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
     processed_this_run = 0
     remaining_to_annotate = sum(1 for r in records if r["id"] not in completed_ids)
     start_time = time.time()
+    quota_exhausted = False
 
     for i, record in enumerate(records, 1):
         record_id = record["id"]
@@ -534,7 +553,13 @@ def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
         )
 
         # Annotate
-        annotation = annotate_record(record, context, rpm=rpm, backend=backend)
+        try:
+            annotation = annotate_record(record, context, rpm=rpm, backend=backend)
+        except QuotaExhaustedError as e:
+            quota_exhausted = True
+            print("  QUOTA EXHAUSTED: stopping early to preserve progress.")
+            print(f"  Details: {e}")
+            break
 
         if annotation is not None:
             # annotation is already coerced by validate_and_coerce in groq_annotator
@@ -569,6 +594,10 @@ def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
         completed_ids.add(record_id)
         _save_progress(ANNOTATE_PROGRESS_FILE, completed_ids)
 
+        # Save checkpoint after each record to survive rate limits/crashes.
+        with open(annotated_json_path, "w", encoding="utf-8") as f:
+            json.dump(list(annotated_results.values()), f, indent=2, ensure_ascii=False)
+
     # Handle skip-failed
     if skip_failed:
         for record in records:
@@ -581,9 +610,10 @@ def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
 
     print(f"\n{'='*60}")
     print(f"Annotation complete: {success_count} success, {fail_count} failed")
+    if quota_exhausted:
+        print("Stopped early due to backend quota exhaustion. Resume with --resume after quota resets.")
 
     # Save annotated JSON (for resume capability)
-    annotated_json_path = config.ANNOTATION_REPORT_PATH.with_suffix(".json")
     with open(annotated_json_path, "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
 

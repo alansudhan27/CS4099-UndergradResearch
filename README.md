@@ -93,7 +93,9 @@ To use a local Ollama model instead of Groq for annotation, you can also set:
 
 ```
 OLLAMA_BASE_URL=http://localhost:11434/v1   # default, only needed to override
-OLLAMA_MODEL=deepseek-r1:70b               # or any model installed in Ollama
+OLLAMA_MODEL=qwen2.5:7b-instruct           # good fit for 16 GB RAM
+OLLAMA_REQUEST_TIMEOUT_SECONDS=120          # fail fast if the local model stalls
+OLLAMA_MAX_COMPLETION_TOKENS=1200           # keeps local generations bounded
 ```
 
 ---
@@ -139,13 +141,17 @@ The `--resume` flag reads `pipeline_output/.prepare_progress.json` and skips alr
 
 Reads the prepared dataset and sends each record to an LLM for technical debt classification.
 
-#### Using Groq (default)
+#### Using Ollama (default)
 
 ```bash
 python -m annotate_tech_debt --stage annotate
 ```
 
-The default rate limit is 30 requests/minute (Groq free tier). To use a higher limit if your account allows:
+The local model runs by default. If you want to use Groq instead, pass `--backend groq`.
+
+If Ollama appears stuck on the first record, switch to a smaller model like `qwen2.5:7b-instruct` and keep the timeout enabled. Very large reasoning models such as `deepseek-r1:8b` can take a long time to produce a full JSON response for a prompt of this size.
+
+The default Groq rate limit is 30 requests/minute. To use a higher limit if your account allows:
 
 ```bash
 python -m annotate_tech_debt --stage annotate --rpm 60
@@ -153,13 +159,13 @@ python -m annotate_tech_debt --stage annotate --rpm 60
 
 **Expected runtime:** ~17 minutes at 30 rpm for 500 records.
 
-#### Using a local Ollama model
+#### Using a different local Ollama model
 
 Make sure Ollama is running locally with your chosen model pulled:
 
 ```bash
-ollama pull deepseek-r1:70b
-ollama serve   # if not already running
+ollama pull qwen2.5:7b-instruct
+ollama serve   # run this in its own terminal if not already running
 ```
 
 Then run:
@@ -171,7 +177,7 @@ python -m annotate_tech_debt --stage annotate --backend ollama
 To use a different Ollama model:
 
 ```bash
-OLLAMA_MODEL=llama3.3:405b python -m annotate_tech_debt --stage annotate --backend ollama
+OLLAMA_MODEL=llama2:7b-chat python -m annotate_tech_debt --stage annotate --backend ollama
 ```
 
 **Expected runtime:** Varies by hardware and model size. No rate limiting is applied for local models.
@@ -211,7 +217,7 @@ Options:
   --rpm N                    Groq requests per minute (annotate only, default: 30).
   --skip-failed              Generate report even if some annotations failed.
   --ids ID [ID ...]          Re-annotate specific record IDs only.
-  --backend groq|ollama      LLM backend to use (annotate only, default: groq).
+  --backend groq|ollama      LLM backend to use (annotate only, default: ollama).
 ```
 
 ---
@@ -237,5 +243,6 @@ After both stages complete, `pipeline_output/annotation_report.md` contains:
 - Language breakdown (Python vs JavaScript)
 - Data quality metrics
 - Individual record details with real code diffs, complexity tables, evidence citations, and baseline comparisons
-#   C S 4 0 9 9 - U n d e r g r a d R e s e a r c h  
+#   C S 4 0 9 9 - U n d e r g r a d R e s e a r c h 
+ 
  
