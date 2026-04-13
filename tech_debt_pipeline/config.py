@@ -12,10 +12,7 @@ DATASET_PATH = BASE_DIR / "combined_whole_dataset_per_comment.json"
 
 # Pipeline output paths
 PIPELINE_DIR = BASE_DIR / "pipeline_output"
-SAMPLED_JSON_PATH = PIPELINE_DIR / "sampled_dataset.json"      # original schema, new dataset
-PREPARED_JSON_PATH = PIPELINE_DIR / "prepared_dataset.json"    # enriched, for annotate stage
-PREPARED_CSV_PATH = PIPELINE_DIR / "prepared_dataset.csv"
-PREPARATION_SUMMARY_PATH = PIPELINE_DIR / "preparation_summary.md"
+PREPARED_JSON_PATH = PIPELINE_DIR / "prepared_dataset.json"
 ANNOTATION_REPORT_PATH = PIPELINE_DIR / "annotation_report.md"
 
 GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")

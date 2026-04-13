@@ -276,7 +276,7 @@ def _write_data_quality(lines: list[str], analysis: dict):
         "\"Generic Comment\" (rq1b) were excluded during candidate filtering. "
         "The \"Generic Comment\" exclusion may bias the sample toward comments "
         "where developers expressed an opinion about AI-generated code. "
-        "See `preparation_summary.md` for exact exclusion counts."
+        "Exclusion counts are printed to stdout during the prepare stage."
     )
     lines.append("")
     lines.append("---")

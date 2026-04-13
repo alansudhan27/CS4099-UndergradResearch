@@ -1,8 +1,6 @@
 import argparse
-import csv
 import json
 import os
-import statistics
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +13,7 @@ from .github_context import (
     get_api_call_count,
 )
 from .llm_annotator import annotate_record, QuotaExhaustedError
-from .diff_parser import parse_patch, detect_language
+from .diff_parser import parse_patch
 from .complexity import compute_complexity_delta
 
 
@@ -62,7 +60,7 @@ def run_prepare():
     print(f"Loaded {len(data)} records")
 
     # Select records
-    selected, reserves_by_category, summary_stats = select_data_points(data)
+    selected, reserves_by_category, _ = select_data_points(data)
     print_selection_summary(selected)
 
     if not selected:
@@ -167,11 +165,7 @@ def run_prepare():
     print(f"Fetching complete: {len(results)} accepted, {rejected_count} rejected")
     print(f"Total API calls: {get_api_call_count()}")
 
-    # Save outputs
-    _save_sampled_json(results)
     _save_prepared_json(results)
-    _save_prepared_csv(results)
-    _save_preparation_summary(results, summary_stats)
 
     # Clean up progress file
     if PROGRESS_FILE.exists():
@@ -247,201 +241,10 @@ def _fetch_record(record: dict) -> dict:
     return annotated.to_dict()
 
 
-def _save_sampled_json(results: list[dict]):
-    """Save selected records in the original dataset schema (no enriched fields)."""
-    sampled = []
-    for r in results:
-        original_commits = r.get("original_commits", {})
-        record = {
-            "id": r["id"],
-            "comment": r.get("original_comment", ""),
-            "repo_full_name": r["repo_full_name"],
-            "path": r["path"],
-            "html_url": r.get("html_url", ""),
-            "line": r.get("line", 0),
-            "annotations": r.get("existing_labels", {}),
-            "commits": original_commits,
-        }
-        sampled.append(record)
-    with open(config.SAMPLED_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(sampled, f, indent=2, ensure_ascii=False)
-    print(f"  Sampled JSON: {config.SAMPLED_JSON_PATH} ({len(sampled)} records, original schema)")
-
-
 def _save_prepared_json(results: list[dict]):
     with open(config.PREPARED_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"  JSON: {config.PREPARED_JSON_PATH} ({len(results)} records)")
-
-
-def _save_prepared_csv(results: list[dict]):
-    """Save flat CSV for R/pandas analysis."""
-    fieldnames = [
-        "id", "repo", "path", "language", "line", "comment_first100",
-        "commit_sha", "commit_date", "commit_message_first50", "html_url",
-        "sample_group", "rq1a_label", "rq1b_label",
-        "patch_size", "patch_was_truncated", "has_subsequent_commits",
-        "lines_added", "lines_removed",
-        "cc_before_avg", "cc_after_avg", "cc_delta_avg",
-        "cc_before_max", "cc_after_max", "cc_delta_max",
-        "nloc_before", "nloc_after", "nloc_delta",
-        "num_functions_before", "num_functions_after",
-        "cc_computation_succeeded",
-        "baseline_count", "baseline_1_sha", "baseline_2_sha",
-        "baseline_median_cc_avg", "baseline_median_lines_added",
-        "baseline_cc_computation_succeeded",
-    ]
-
-    with open(config.PREPARED_CSV_PATH, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for r in results:
-            commits = r.get("original_commits", {})
-            first = commits.get("first_commit", {}) or {}
-            labels = r.get("existing_labels", {})
-            complexity = r.get("complexity_metrics", {}) or {}
-            baselines = r.get("baseline_commits", [])
-            history = (r.get("github_context") or {}).get("commit_history", [])
-
-            # Count subsequent commits
-            first_date = first.get("date", "")
-            subsequent = [c for c in history if c.get("date", "") > first_date] if first_date else []
-
-            # Baseline medians
-            baseline_cc_avgs = [b.get("complexity_avg", 0) for b in baselines if not b.get("complexity_error")]
-            baseline_lines = [b.get("lines_added", 0) for b in baselines]
-            baseline_cc_succeeded = any(not b.get("complexity_error") for b in baselines)
-
-            median_cc = statistics.median(baseline_cc_avgs) if baseline_cc_avgs else ""
-            median_lines = statistics.median(baseline_lines) if baseline_lines else ""
-
-            row = {
-                "id": r["id"],
-                "repo": r["repo_full_name"],
-                "path": r["path"],
-                "language": detect_language(r["path"]),
-                "line": r.get("line", 0),
-                "comment_first100": r.get("original_comment", "")[:100],
-                "commit_sha": first.get("sha", ""),
-                "commit_date": first.get("date", ""),
-                "commit_message_first50": first.get("message", "")[:50],
-                "html_url": r.get("html_url", ""),
-                "sample_group": r.get("sample_group", ""),
-                "rq1a_label": (labels.get("rq1a") or {}).get("pred_label", ""),
-                "rq1b_label": (labels.get("rq1b") or {}).get("pred_label", ""),
-                "patch_size": len(first.get("patch", "")),
-                # Use lowercase strings for booleans so R/pandas parse them correctly
-                "patch_was_truncated": str(r.get("patch_was_truncated", False)).lower(),
-                "has_subsequent_commits": str(len(subsequent) > 0).lower(),
-                "lines_added": r.get("lines_added", 0),
-                "lines_removed": r.get("lines_removed", 0),
-                "cc_before_avg": complexity.get("before_avg_complexity", ""),
-                "cc_after_avg": complexity.get("after_avg_complexity", ""),
-                "cc_delta_avg": complexity.get("delta_avg", ""),
-                "cc_before_max": complexity.get("before_max_complexity", ""),
-                "cc_after_max": complexity.get("after_max_complexity", ""),
-                "cc_delta_max": complexity.get("delta_max", ""),
-                "nloc_before": complexity.get("before_nloc", ""),
-                "nloc_after": complexity.get("after_nloc", ""),
-                "nloc_delta": complexity.get("delta_nloc", ""),
-                "num_functions_before": len(complexity.get("before_functions", [])),
-                "num_functions_after": len(complexity.get("after_functions", [])),
-                "cc_computation_succeeded": str(not bool(complexity.get("error"))).lower(),
-                "baseline_count": len(baselines),
-                "baseline_1_sha": baselines[0].get("sha", "") if len(baselines) > 0 else "",
-                "baseline_2_sha": baselines[1].get("sha", "") if len(baselines) > 1 else "",
-                "baseline_median_cc_avg": median_cc,
-                "baseline_median_lines_added": median_lines,
-                # Consistent bool — False when no baselines rather than empty string
-                "baseline_cc_computation_succeeded": str(baseline_cc_succeeded).lower(),
-            }
-            writer.writerow(row)
-
-    print(f"  CSV: {config.PREPARED_CSV_PATH}")
-
-
-def _save_preparation_summary(results: list[dict], stats: dict):
-    """Save preparation summary markdown."""
-    lines = []
-    lines.append("# Data Preparation Summary")
-    lines.append("")
-    lines.append(f"**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    lines.append(f"**Seed:** {stats['seed']}")
-    lines.append(f"**Sample hash:** `{stats['sample_hash']}`")
-    lines.append("")
-
-    lines.append("## Sample Size")
-    lines.append("")
-    lines.append(f"- **Total candidates:** {stats['total_candidates']}")
-    lines.append(f"- **Total selected:** {stats['total_selected']}")
-    lines.append(f"  - Primary: {stats['primary_count']}")
-    lines.append(f"  - Exploratory: {stats['exploratory_count']}")
-    lines.append("")
-
-    # Category distribution
-    lines.append("## Category Distribution")
-    lines.append("")
-    lines.append("| Category | Requested | Actual | Shortfall |")
-    lines.append("|----------|-----------|--------|-----------|")
-    allocation = stats.get("allocation", {})
-    shortfalls = stats.get("shortfalls", {})
-    cat_dist = stats.get("category_distribution", {})
-    for cat in sorted(allocation, key=lambda c: -allocation[c]):
-        requested = allocation[cat]
-        actual = cat_dist.get(cat, {}).get("count", 0)
-        shortfall = shortfalls.get(cat, ("", ""))
-        sf_text = f"requested {shortfall[0]}, got {shortfall[1]}" if cat in shortfalls else "-"
-        lines.append(f"| {cat} | {requested} | {actual} | {sf_text} |")
-    lines.append("")
-
-    # Language distribution
-    lines.append("## Language Distribution")
-    lines.append("")
-    lang_dist = stats.get("language_distribution", {})
-    for lang, count in sorted(lang_dist.items(), key=lambda x: -x[1]):
-        lang_pct = count / stats["total_selected"] * 100 if stats["total_selected"] > 0 else 0
-        lines.append(f"- **{lang}**: {count} ({lang_pct:.1f}%)")
-    lines.append("")
-
-    # Patch size
-    lines.append("## Patch Size Distribution")
-    lines.append("")
-    lines.append(f"- P25: {stats['patch_size_p25']} chars")
-    lines.append(f"- P50 (median): {stats['patch_size_p50']} chars")
-    lines.append(f"- P75: {stats['patch_size_p75']} chars")
-    lines.append(f"- % with subsequent commits: {stats['pct_with_subsequent']}%")
-    lines.append("")
-
-    # Fetch stats
-    lines.append("## Fetch Statistics")
-    lines.append("")
-    total = len(results)
-    with_baselines = sum(1 for r in results if r.get("baseline_commits"))
-    with_file = sum(1 for r in results if (r.get("github_context") or {}).get("file_available"))
-    cc_success = sum(1 for r in results if not (r.get("complexity_metrics") or {}).get("error"))
-    errors = sum(1 for r in results if r.get("fetch_errors"))
-
-    pct = lambda n: f"{n/total*100:.0f}%" if total > 0 else "N/A"
-    lines.append(f"- **File content fetched:** {with_file}/{total} ({pct(with_file)})")
-    lines.append(f"- **Records with baselines:** {with_baselines}/{total} ({pct(with_baselines)})")
-    lines.append(f"- **CC computation succeeded:** {cc_success}/{total} ({pct(cc_success)})")
-    lines.append(f"- **Records with errors:** {errors}")
-    lines.append(f"- **Total API calls:** {get_api_call_count()}")
-    lines.append("")
-
-    # Baseline quality
-    baseline_counts = [len(r.get("baseline_commits", [])) for r in results]
-    lines.append("## Baseline Quality")
-    lines.append("")
-    lines.append(f"- Records with 2 baselines: {sum(1 for c in baseline_counts if c >= 2)}")
-    lines.append(f"- Records with 1 baseline: {sum(1 for c in baseline_counts if c == 1)}")
-    lines.append(f"- Records with 0 baselines: {sum(1 for c in baseline_counts if c == 0)}")
-    lines.append("")
-
-    with open(config.PREPARATION_SUMMARY_PATH, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    print(f"  Summary: {config.PREPARATION_SUMMARY_PATH}")
 
 
 # ─── ANNOTATE ───────────────────────────────────────────────────────────────
