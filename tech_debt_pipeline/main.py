@@ -14,7 +14,7 @@ from .github_context import (
     gather_github_context, fetch_baseline_commits, count_lines_from_patch,
     get_api_call_count,
 )
-from .groq_annotator import annotate_record, QuotaExhaustedError
+from .llm_annotator import annotate_record, QuotaExhaustedError
 from .diff_parser import parse_patch, detect_language
 from .complexity import compute_complexity_delta
 
@@ -446,13 +446,24 @@ def _save_preparation_summary(results: list[dict], stats: dict):
 
 # ─── ANNOTATE ───────────────────────────────────────────────────────────────
 
-def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
+def _save_prepared(records: list[dict]) -> None:
+    """Atomically write records back to prepared_dataset.json."""
+    tmp = config.PREPARED_JSON_PATH.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2, ensure_ascii=False)
+    tmp.replace(config.PREPARED_JSON_PATH)
+
+
+def run_annotate(rpm: int = config.GROQ_RATE_LIMIT_RPM,
                  skip_failed: bool = False, ids: list[str] | None = None,
                  backend: str = config.DEFAULT_BACKEND):
-    """Command 2: Annotate prepared records and generate report."""
+    """Annotate prepared records, saving each result back into prepared_dataset.json.
+
+    Resume is automatic: records with annotation_status == 'success' are skipped.
+    The web UI (annotation_server.py) reads the same file, so progress is visible live.
+    """
     _ensure_pipeline_dir()
 
-    # Load prepared dataset
     if not config.PREPARED_JSON_PATH.exists():
         raise SystemExit(f"ERROR: {config.PREPARED_JSON_PATH} not found. Run --stage prepare first.")
 
@@ -461,113 +472,76 @@ def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
         records = json.load(f)
     print(f"Loaded {len(records)} records")
 
+    already_done = sum(1 for r in records if r.get("annotation_status") == "success")
+    if already_done:
+        print(f"Skipping {already_done} already-annotated records (remove annotation_status to re-annotate)")
+
     if backend == "ollama":
         print(f"Backend: Ollama ({config.OLLAMA_MODEL}) at {config.OLLAMA_BASE_URL}")
-        print("Estimated time depends on local model speed")
     else:
-        est_minutes = len(records) / rpm
         print(f"Backend: Groq ({config.GROQ_MODEL})")
-        print(f"Estimated time: {est_minutes:.0f} min at {rpm} rpm (+ retries)")
 
-    # Persist annotated records incrementally so resume never loses progress.
-    annotated_json_path = config.ANNOTATION_REPORT_PATH.with_suffix(".json")
-
-    # Handle resume
-    completed_annotations = {}
-    completed_ids = set()
-    if resume:
-        completed_ids = _load_progress(ANNOTATE_PROGRESS_FILE)
-        # Load previously checkpointed annotation data
-        if annotated_json_path.exists():
-            try:
-                with open(annotated_json_path, "r", encoding="utf-8") as f:
-                    for r in json.load(f):
-                        if r.get("annotation_status") == "success":
-                            completed_annotations[r["id"]] = r
-                        # Keep all prior statuses so resume preserves context.
-                        elif r.get("annotation_status") in {"failed", "skipped"}:
-                            completed_annotations[r["id"]] = r
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        # Reconcile progress IDs with checkpointed records.
-        # If a run was interrupted before JSON checkpoint was written, don't skip unseen IDs.
-        checkpoint_ids = set(completed_annotations.keys())
-        dangling_progress_ids = completed_ids - checkpoint_ids
-        if dangling_progress_ids:
-            print(
-                f"Resume note: {len(dangling_progress_ids)} progress IDs had no checkpointed records; "
-                "they will be re-annotated."
-            )
-            completed_ids -= dangling_progress_ids
-
-        completed_ids |= checkpoint_ids
-        if completed_ids:
-            print(f"Resuming: {len(completed_ids)} records already annotated")
-
-    # Filter to specific IDs if requested
+    # Filter to specific IDs if requested (force re-annotate by clearing their status first)
     if ids:
         id_set = set(ids)
-        records = [r for r in records if r["id"] in id_set]
-        # Remove from completed so they get re-annotated
-        for rid in id_set:
-            completed_ids.discard(rid)
-            completed_annotations.pop(rid, None)
-        print(f"Re-annotating {len(records)} specific records")
+        for r in records:
+            if r["id"] in id_set:
+                r["annotation_status"] = "pending"
+                r["tech_debt_analysis"] = None
+        print(f"Re-annotating {len(id_set)} specific records")
 
-    # Annotate
-    annotated_results = dict(completed_annotations)
-    total = len(records)
-    previously_completed = len(completed_ids)
-    success_count = previously_completed
+    # Determine what to annotate
+    to_annotate = [r for r in records if r.get("annotation_status") != "success"]
+    total_to_do = len(to_annotate)
+
+    # Compute daily call cap for Groq to avoid hitting RPD / TPD limits
+    if backend == "groq":
+        max_calls_by_tpd = int(config.GROQ_TPD / config.GROQ_ESTIMATED_TOKENS_PER_CALL)
+        max_calls_this_run = int(min(config.GROQ_RPD, max_calls_by_tpd) * 0.95)  # 5% safety buffer
+        print(f"Groq daily cap: {max_calls_this_run} calls this run "
+              f"(RPD={config.GROQ_RPD:,}, TPD={config.GROQ_TPD:,})")
+    else:
+        max_calls_this_run = None  # no daily cap for ollama
+
+    success_count = already_done
     fail_count = 0
     processed_this_run = 0
-    remaining_to_annotate = sum(1 for r in records if r["id"] not in completed_ids)
     start_time = time.time()
     quota_exhausted = False
 
-    for i, record in enumerate(records, 1):
-        record_id = record["id"]
-        if record_id in completed_ids:
-            continue
-
+    for i, record in enumerate(to_annotate, 1):
+        if max_calls_this_run is not None and processed_this_run >= max_calls_this_run:
+            print(f"\nGroq daily limit reached ({processed_this_run} calls this run).")
+            print("Re-run the same command tomorrow — already-annotated records will be skipped.")
+            break
         elapsed = time.time() - start_time
-        fallback_rate = rpm / 60 if backend != "ollama" else 0.1  # ~6 records/min fallback for Ollama
+        fallback_rate = rpm / 60 if backend != "ollama" else 0.1
         rate = processed_this_run / max(elapsed, 1) if processed_this_run > 0 else fallback_rate
-        eta = remaining_to_annotate / rate if rate > 0 else 0
+        remaining = total_to_do - i + 1
+        eta = remaining / rate if rate > 0 else 0
 
-        if backend == "ollama":
-            print(f"\n[{i}/{total}] {record['repo_full_name']} | "
-                  f"local | ETA: {eta/60:.0f}m")
-        else:
-            print(f"\n[{i}/{total}] {record['repo_full_name']} | "
-                  f"{rpm}rpm | ETA: {eta/60:.0f}m")
+        print(f"\n[{i}/{total_to_do}] {record['repo_full_name']} | ETA: {eta/60:.0f}m")
 
-        # Build context from stored data
         ctx_data = record.get("github_context") or {}
         context = GitHubContext(
             file_content_snippet=ctx_data.get("file_content_snippet", ""),
             file_available=ctx_data.get("file_available", False),
-            full_file_content=ctx_data.get("full_file_content", ""),
             commit_history=ctx_data.get("commit_history", []),
         )
 
-        # Annotate
         try:
             annotation = annotate_record(record, context, rpm=rpm, backend=backend)
         except QuotaExhaustedError as e:
             quota_exhausted = True
-            print("  QUOTA EXHAUSTED: stopping early to preserve progress.")
+            print("  QUOTA EXHAUSTED: stopping early. Re-run to resume automatically.")
             print(f"  Details: {e}")
             break
 
         if annotation is not None:
-            # annotation is already coerced by validate_and_coerce in groq_annotator
             record["tech_debt_analysis"] = annotation.to_dict()
             record["annotation_status"] = "success"
             record["schema_violations"] = []
 
-            # Re-validate to track any coercions that were applied
             _, violations = TechDebtAnnotation.validate_and_coerce(record["tech_debt_analysis"])
             if violations:
                 record["schema_violations"] = violations
@@ -575,10 +549,11 @@ def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
 
             success_count += 1
         else:
-            record["annotation_status"] = "failed"
+            record["annotation_status"] = "skipped"
             record["tech_debt_analysis"] = None
             record["schema_violations"] = []
             fail_count += 1
+            print("  Skipped: retries exhausted")
 
         record["annotation_metadata"] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -586,46 +561,27 @@ def run_annotate(resume: bool = False, rpm: int = config.GROQ_RATE_LIMIT_RPM,
             "model": config.OLLAMA_MODEL if backend == "ollama" else config.GROQ_MODEL,
         }
 
-        annotated_results[record_id] = record
         processed_this_run += 1
-        remaining_to_annotate -= 1
 
-        # Save progress
-        completed_ids.add(record_id)
-        _save_progress(ANNOTATE_PROGRESS_FILE, completed_ids)
+        # Write the full dataset back after every record so the web UI sees live progress
+        # and a crash loses at most one record's work.
+        _save_prepared(records)
 
-        # Save checkpoint after each record to survive rate limits/crashes.
-        with open(annotated_json_path, "w", encoding="utf-8") as f:
-            json.dump(list(annotated_results.values()), f, indent=2, ensure_ascii=False)
-
-    # Handle skip-failed
     if skip_failed:
         for record in records:
-            if record["id"] not in annotated_results:
+            if record.get("annotation_status") == "failed":
                 record["annotation_status"] = "skipped"
-                record["tech_debt_analysis"] = None
-                annotated_results[record["id"]] = record
-
-    all_results = list(annotated_results.values())
+        _save_prepared(records)
 
     print(f"\n{'='*60}")
-    print(f"Annotation complete: {success_count} success, {fail_count} failed")
+    print(f"Annotation complete: {success_count} annotated, {fail_count} failed")
     if quota_exhausted:
-        print("Stopped early due to backend quota exhaustion. Resume with --resume after quota resets.")
+        print("Re-run the same command to continue — already-annotated records will be skipped.")
 
-    # Save annotated JSON (for resume capability)
-    with open(annotated_json_path, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=2, ensure_ascii=False)
-
-    # Generate report
+    # Generate markdown report from all records
     from .report_generator import generate_markdown_report
-    generate_markdown_report(all_results, config.ANNOTATION_REPORT_PATH)
-
-    # Clean up progress
-    if ANNOTATE_PROGRESS_FILE.exists():
-        ANNOTATE_PROGRESS_FILE.unlink()
-
-    print(f"\nReport: {config.ANNOTATION_REPORT_PATH}")
+    generate_markdown_report(records, config.ANNOTATION_REPORT_PATH)
+    print(f"Report: {config.ANNOTATION_REPORT_PATH}")
 
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
@@ -634,8 +590,6 @@ def main():
     parser = argparse.ArgumentParser(description="Gen AI Technical Debt Annotation Pipeline")
     parser.add_argument("--stage", required=True, choices=["prepare", "annotate"],
                         help="Pipeline stage to run")
-    parser.add_argument("--resume", action="store_true",
-                        help="Resume from where the previous run left off")
     parser.add_argument("--rpm", type=int, default=config.GROQ_RATE_LIMIT_RPM,
                         help=f"Groq requests per minute (default: {config.GROQ_RATE_LIMIT_RPM})")
     parser.add_argument("--skip-failed", action="store_true",
@@ -651,7 +605,6 @@ def main():
         run_prepare()
     elif args.stage == "annotate":
         run_annotate(
-            resume=args.resume,
             rpm=args.rpm,
             skip_failed=args.skip_failed,
             ids=args.ids,

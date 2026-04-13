@@ -1,7 +1,7 @@
 """Local Flask server for manual tech-debt annotation.
 
 Run with:
-    python -m annotate_tech_debt.annotation_server
+    python -m tech_debt_pipeline.annotation_server
 
 Then open http://localhost:5000
 """
@@ -109,7 +109,7 @@ def api_suggest(idx: int):
     body = request.get_json(force=True) or {}
     backend = body.get("backend", "groq")
 
-    from .groq_annotator import annotate_record
+    from .llm_annotator import annotate_record
     from .models import GitHubContext
 
     record = _records[idx]
@@ -147,7 +147,7 @@ if __name__ == "__main__":
     app.run(debug=False, port=5000)
 
 
-# Support `python -m annotate_tech_debt.annotation_server`
+# Support `python -m tech_debt_pipeline.annotation_server`
 def main():
     load_data()
     print("[annotator] Open http://localhost:5000")

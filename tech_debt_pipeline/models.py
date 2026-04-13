@@ -141,7 +141,6 @@ class BaselineCommit:
 class GitHubContext:
     file_content_snippet: str = ""
     file_available: bool = False
-    full_file_content: str = ""
     commit_history: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:

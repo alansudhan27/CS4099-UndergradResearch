@@ -259,13 +259,12 @@ def gather_github_context(record: dict) -> GitHubContext:
 
     ctx = GitHubContext()
 
-    # 1. Fetch file content at commit
+    # 1. Fetch file content at commit (kept only for the ±50-line snippet)
     if sha:
         print(f"  Fetching file content for {repo}/{path}@{sha[:7]}...")
         content = fetch_file_at_commit(repo, path, sha)
         if content:
             ctx.file_available = True
-            ctx.full_file_content = content
             ctx.file_content_snippet = _extract_snippet(content, line)
         else:
             print(f"  File not available via API, using patch from dataset")
